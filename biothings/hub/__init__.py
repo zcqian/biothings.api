@@ -219,7 +219,7 @@ class HubServer(object):
         "config", "job", "dump", "upload", "dataplugin", "source", "build",
         "diff", "index", "snapshot", "release", "inspect", "sync", "api",
         "terminal", "reloader", "dataupload", "ws", "readonly", "upgrade",
-        "autohub","hooks",
+        "autohub", "hooks",
     ]
     DEFAULT_MANAGERS_ARGS = {"upload": {"poll_schedule": "* * * * * */10"}}
     DEFAULT_RELOADER_CONFIG = {
@@ -534,7 +534,7 @@ class HubServer(object):
             job_manager=self.managers["job_manager"],
             poll_schedule="* * * * * */10", **args)
         snapshot_manager.configure(config.SNAPSHOT_CONFIG)
-        snapshot_manager.poll("snapshot",snapshot_manager.snapshot_build)
+        snapshot_manager.poll("snapshot", snapshot_manager.snapshot_build)
         self.managers["snapshot_manager"] = snapshot_manager
 
     def configure_release_manager(self):
@@ -658,7 +658,6 @@ class HubServer(object):
             self.logger.error("Could't configure feature 'autohub', will be deactivated: %s" % e)
             self.features.remove("autohub")
 
-
     def configure_hooks_feature(self):
         """
         Ingest user-defined commands into hub namespace, giving access
@@ -670,7 +669,7 @@ class HubServer(object):
         if not os.path.exists(hooks_folder):
             self.logger.info("Hooks folder '%s' doesn't exist, creating it" % hooks_folder)
             os.makedirs(hooks_folder)
-        self.hook_files = glob.glob(os.path.join(hooks_folder,"*.py"))
+        self.hook_files = glob.glob(os.path.join(hooks_folder, "*.py"))
 
     def ingest_hooks(self):
         if not self.hook_files:
@@ -684,7 +683,7 @@ class HubServer(object):
 
     def process_hook_file(self, hook_file):
         strcode = open(hook_file).read()
-        code = compile(strcode, "<string>", "exec") 
+        code = compile(strcode, "<string>", "exec")
         eval(code, self.shell.extra_ns, self.shell.extra_ns)
 
     def configure_managers(self):
@@ -734,14 +733,17 @@ class HubServer(object):
         from biothings.hub.upgrade import BioThingsSystemUpgrade, ApplicationSystemUpgrade
         def get_upgrader(klass, folder):
             version = get_version(folder)
-            klass.SRC_ROOT_FOLDER = folder
-            klass.GIT_REPO_URL = version["giturl"]
-            klass.DEFAULT_BRANCH = version["branch"]
-            return klass
+            if version:
+                klass.SRC_ROOT_FOLDER = folder
+                klass.GIT_REPO_URL = version["giturl"]
+                klass.DEFAULT_BRANCH = version["branch"]
+                return klass
 
         bt_upgrader_class = get_upgrader(BioThingsSystemUpgrade, config.biothings_folder)
         app_upgrader_class = get_upgrader(ApplicationSystemUpgrade, config.app_folder)
-        self.managers["dump_manager"].register_classes([bt_upgrader_class, app_upgrader_class])
+        self.managers["dump_manager"].register_classes(
+            [cls for cls in [bt_upgrader_class, app_upgrader_class] if cls]
+        )
 
         @asyncio.coroutine
         def check_code_upgrade():
@@ -1106,7 +1108,7 @@ class HubServer(object):
         if "upgrade" in self.DEFAULT_FEATURES:
             def upgrade(code_base):  # just a wrapper over dumper
                 """Upgrade (git pull) repository for given code base name ("biothings_sdk" or "application")"""
-                assert code_base in ("application","biothings_sdk"), "Unknown code base '%s'" % code_base
+                assert code_base in ("application", "biothings_sdk"), "Unknown code base '%s'" % code_base
                 return self.managers["dump_manager"].dump_src("__" + code_base)
             self.commands["upgrade"] = CommandDefinition(command=upgrade)
 
@@ -1124,7 +1126,7 @@ class HubServer(object):
         if self.configured:
             raise Exception("API endpoint creation must be done before Hub is configured")
         from biothings.hub.api import EndpointDefinition
-        endpoint = EndpointDefinition(name=command_name,method=method,**kwargs)
+        endpoint = EndpointDefinition(name=command_name, method=method, **kwargs)
         self.api_endpoints[endpoint_name] = endpoint
 
     def configure_api_endpoints(self):
