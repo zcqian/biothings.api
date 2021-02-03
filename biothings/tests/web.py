@@ -9,9 +9,12 @@
     TEST_CONF
 
 """
+import glob
+import json
 import os
 from functools import partial
 
+import elasticsearch
 import pytest
 import requests
 from tornado.ioloop import IOLoop
@@ -115,6 +118,60 @@ class BiothingsWebAppTest(BiothingsDataTest, AsyncHTTPTestCase):
         Starts the tornado application to run tests locally.
         Need a config.py under the current working dir.
     """
+
+    def _process_es_data_dir(self, data_dir_path):
+        client = elasticsearch.Elasticsearch(self.settings.ES_HOST)
+        server_major_version = client.info()['version']['number'].split('.')[0]
+        client_major_version = str(elasticsearch.__version__[0])
+        if server_major_version != client_major_version:
+            pytest.exit('ES version does not match its python library.')
+
+        # FIXME: this is broken
+        default_doc_type = self.settings.ES_DOC_TYPE
+
+        indices = []
+        glob_json_pattern = os.path.join(data_dir_path, '*.json')
+        # FIXME: wrap around in try-finally so the index is guaranteed to be
+        #  cleaned up
+        for index_mapping_path in glob.glob(glob_json_pattern):
+            index_name = os.path.basename(index_mapping_path)
+            index_name = os.path.splitext(index_name)[0]
+            indices.append(index_name)
+            if client.indices.exists(index_name):
+                raise Exception(f"{index_name} already exists!")
+            with open(index_mapping_path, 'r') as f:
+                mapping = json.load(f)
+            data_path = os.path.join(data_dir_path, index_name + '.ndjson')
+            with open(data_path, 'r') as f:
+                bulk_data = f.read()
+            if elasticsearch.__version__[0] > 6:
+                client.indices.create(index_name, mapping, include_type_name=True)
+                client.bulk(bulk_data, index_name)
+            else:
+                client.indices.create(index_name, mapping)
+                # FIXME: doc_type problem in ES6
+                # client.bulk(bulk_data, index_name, default_doc_type)
+                client.bulk(bulk_data, index_name, "_doc")
+
+            client.indices.refresh()
+        yield
+        for index_name in indices:
+            client.indices.delete(index_name)
+
+    @pytest.fixture(scope="class", autouse=True)
+    def load_es_data_cls(self, request):
+        data_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            'test_data',
+            getattr(self, 'TEST_DATA_NAME', request.cls.__name__)
+        )
+        if not os.path.exists(data_dir):
+            if hasattr(self, 'TEST_DATA_NAME'):
+                pytest.exit(f"TEST_DATA_NAME set but {data_dir} not present")
+            else:  # not explicitly set, assume no data
+                pass
+        else:
+            yield from self._process_es_data_dir(data_dir)
 
     @classmethod
     def setup_class(cls):
