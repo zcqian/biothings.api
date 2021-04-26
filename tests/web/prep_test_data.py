@@ -4,11 +4,36 @@ import json
 import logging
 import os
 import pickle
+import sys
 from pprint import pprint
 from typing import Any, Dict, List, Optional, Set, FrozenSet
 from functools import reduce
 
 from elasticsearch import Elasticsearch
+
+import tomlkit
+
+
+def checkpoint(d: dict, f: str):
+    """
+    Checkpoint format
+
+    Essentially maintain state of everything inside a TOML document
+    TOML should be more readable than YAML?
+
+    [queries]
+
+    [queries.unique_name]
+    query = '{"json": "in a string"}'
+    doc_id = 'to_be_populated, will be preserved on future runs, empty for nil'
+
+    [progress]
+    # intermediate data for checkpoints
+    # TBD, might be in a separate file not checked into VCS
+
+    """
+    toml_doc = tomlkit.document()
+
 
 
 def dict_hash(d: dict) -> bytes:
@@ -48,9 +73,12 @@ def get_es_index_mappings(client: Elasticsearch, index: str) -> dict:
     if len(setting) != 1:
         logging.warning("%s is alias with more than one index?", index)
     setting = next(iter(setting.values()))  # pull the value
-    setting["settings"]["index"] = {
-        "analysis": setting["settings"]["index"]["analysis"]
-    }
+    if 'analysis' in setting["settings"]["index"]:
+        setting["settings"]["index"] = {
+            "analysis": setting["settings"]["index"]["analysis"]
+        }
+    else:
+        setting["settings"]["index"] = {}
     return setting
 
 
@@ -67,36 +95,40 @@ def dump_ids_from_queries(client: Elasticsearch,
         except FileNotFoundError:
             pass
     num_total = len(queries)
-    for query_idx, query in enumerate(queries):
-        query_hash = dict_hash(query)
-        if query_hash in done:
-            logging.info("Skipping query %d because it was done", query_idx)
-            continue
-        logging.info("Processing query %d of %d", query_idx, num_total)
-        query_hit_running_total = 0
-        resp = client.search(index=index, body=query, scroll='30s')
-        sc_id = resp['_scroll_id']
-        while len(resp['hits']['hits']) > 0:
-            for hit in resp['hits']['hits']:
-                id_to_query.setdefault(hit['_id'], set()).add(query_idx)
-                query_hit_running_total += 1
-            logging.info("Obtained %d queries", query_hit_running_total)
-            if query_hit_running_total >= target_size:
-                # stop early if we have enough, or scroll through
-                logging.info(
-                    "Stop scrolling early because got %d results for query %d",
-                    query_hit_running_total, query_idx
-                )
-                break
-            resp = client.scroll(scroll_id=sc_id, scroll='30s')
-        else:
-            logging.info("End of results, got %d", query_hit_running_total)
-        client.clear_scroll(scroll_id=sc_id)
-        done.add(query_hash)
+    try:
+        for query_idx, query in enumerate(queries):
+            query_hash = dict_hash(query)
+            if query_hash in done:
+                logging.info("Skipping query %d because it was done", query_idx)
+                continue
+            logging.info("Processing query %d of %d", query_idx, num_total)
+            query_hit_running_total = 0
+            resp = client.search(index=index, body=query, scroll='30s')
+            sc_id = resp['_scroll_id']
+            while len(resp['hits']['hits']) > 0:
+                for hit in resp['hits']['hits']:
+                    id_to_query.setdefault(hit['_id'], set()).add(query_idx)
+                    query_hit_running_total += 1
+                logging.info("Obtained %d queries", query_hit_running_total)
+                if query_hit_running_total >= target_size:
+                    # stop early if we have enough, or scroll through
+                    logging.info(
+                        "Stop scrolling early because got %d results for query %d",
+                        query_hit_running_total, query_idx
+                    )
+                    break
+                resp = client.scroll(scroll_id=sc_id, scroll='30s')
+            else:
+                logging.info("End of results, got %d", query_hit_running_total)
+            client.clear_scroll(scroll_id=sc_id)
+            done.add(query_hash)
+    except KeyboardInterrupt:
+        logging.warning("Got KeyboardInterrupt")
         if checkpoint_path:
             with open(checkpoint_path, 'wb') as f:
                 pickle.dump((id_to_query, done), f)
             logging.info("Written checkpoint.")
+        sys.exit(0)
     return id_to_query
 
 
@@ -172,7 +204,7 @@ def main(args: argparse.Namespace):
     field_to_id = {}
     for missing_id in missing:
         field_to_id[all_fields[missing_id]] = None
-    logging.warning("Follwing elements are missing:\n%s", missing)
+    logging.warning("Following elements are missing:\n%s", missing)
     picked_ids = minimal_cover_set(subsets)
     for doc_id, subsets in picked_ids.items():
         for field_idx in subsets:
@@ -190,6 +222,10 @@ def main(args: argparse.Namespace):
     # write output: ndjson, mapping, metadata
 
 
+def write_queries_to_disk():
+    pass
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -201,20 +237,24 @@ if __name__ == '__main__':
         '--index', metavar='INDEX', type=str, required=True
     )
     parser.add_argument(
-        '--input', metavar='INPUT', required=True
+        '--input', metavar='INPUT', required=False, default=None
     )
     parser.add_argument(
-        '--output', '-o', metavar='OUTPUT_DIR', required=True
+        '--output', '-o', metavar='OUTPUT', required=False, default=None
     )
-    # subparsers = parser.add_subparsers(help='sub-command help')
-    # parser_dump_id = subparsers.add_parser('dump_id')
+    subparsers = parser.add_subparsers(dest="cmd")
+    generate_field_parser = subparsers.add_parser('generate')
+    query_parser = subparsers.add_parser('query')
+    query_parser.add_argument(
+        '--num', '-n', metavar='N', type=int, default=10000,
+        help="target number of _id to obtain, may get more or less than N"
+    )
     parser.add_argument(
-        '--num_ids_per_query', metavar='NR', type=int, default=10000
+        '--size', '-s', metavar='SIZE', type=int, default=1000,
+        help="number of results from ES per request"
     )
+    dump_parser = subparsers.add_parser('dump')
 
-    parser.add_argument(
-        '--page-size', metavar='SIZE', type=int, default=1000
-    )
     args = parser.parse_args()
     if args.verbose == 1:
         logging.getLogger().setLevel(logging.INFO)
