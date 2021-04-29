@@ -93,10 +93,11 @@ class MiniClient:
 
     def get_source(self, index: str, doc_id):
         if self.major_version > 6:
-            src = self.api_req('get' f'/{index}/_source/{doc_id}')
+            src = self.api_req('get', f'/{index}/_source/{doc_id}')
         else:
-            pass
-        ret = self.api_req(f'')
+            doc_type = self.get_doc_type(index)
+            src = self.api_req('get', f'/{index}/{doc_type}/{doc_id}/_source')
+        return src
 
 
 def checkpoint(d: dict, f: str):
@@ -251,6 +252,8 @@ def perform_query(args: argparse.Namespace):
     all_queries = []
     query_names = []
     for query_name, q_body in doc['queries'].items():
+        if 'doc_id' in q_body and not q_body.get('re-query', False):
+            continue
         all_queries.append(json.loads(q_body['query']))
         query_names.append(query_name)
 
