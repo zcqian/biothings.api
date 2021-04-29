@@ -100,23 +100,14 @@ class MiniClient:
         return src
 
 
-def checkpoint(d: dict, f: str):
-    """
-    Checkpoint format
+def write_ckpt(o, path: str):
+    with open(path, 'wb') as f:
+        pickle.dump(o, f)
 
-    Essentially maintain state of everything inside a TOML document
-    TOML should be more readable than YAML?
 
-    [queries]
-
-    [queries.unique_name]
-    query = '{"json": "in a string"}'
-    doc_id = 'to_be_populated, will be preserved on future runs, empty for nil'
-    updated_date = 2021-04-27T14:00:00-07:00  # auto populated, informational
-    force_update = false  # change to true to re-evaluate
-
-    """
-    toml_doc = tomlkit.document()
+def load_ckpt(path: str):
+    with open(path, 'rb') as f:
+        return pickle.load(f)
 
 
 def dict_hash(d: dict) -> bytes:
@@ -160,8 +151,7 @@ def dump_ids_from_queries(client: MiniClient,
     done = set()
     if checkpoint_path:
         try:
-            with open(checkpoint_path, 'rb') as f:
-                id_to_query, done = pickle.load(f)
+            id_to_query, done = load_ckpt(checkpoint_path)
         except FileNotFoundError:
             pass
     num_total = len(queries)
@@ -196,10 +186,11 @@ def dump_ids_from_queries(client: MiniClient,
     except KeyboardInterrupt:
         logging.warning("Got KeyboardInterrupt")
         if checkpoint_path:
-            with open(checkpoint_path, 'wb') as f:
-                pickle.dump((id_to_query, done), f)
-            logging.info("Written checkpoint.")
+            write_ckpt((id_to_query, done), checkpoint_path)
         sys.exit(0)
+    logging.info("done with all queries")
+    if checkpoint_path:
+        write_ckpt((id_to_query, done), checkpoint_path)
     return id_to_query
 
 
@@ -235,11 +226,27 @@ def dump_mapping_and_docs(client: MiniClient, index: str, ids: List[str],
         json.dump(setting, file, indent=2)
     with open(os.path.join(output_dir, 'data.ndjson'), 'w') as file:
         for doc_id in ids:
-            doc_src = client.get_source(index=index, id=doc_id)
+            doc_src = client.get_source(index=index, doc_id=doc_id)
             json.dump({"index": {"_id": doc_id}}, file)
             file.write('\n')
             json.dump(doc_src, file)
             file.write('\n')
+
+
+def dump_documents(args: argparse.Namespace):
+    fn_mapping = f'{args.output_prefix}.json'
+    fn_docs = f'{args.output_prefix}.ndjson'
+    if os.path.exists(fn_mapping) or os.path.exists(fn_docs):
+        logging.error("File already exists!")
+        sys.exit(-1)
+    with open(args.input) as f:
+        t_doc = tomlkit.loads(f.read())
+    doc_ids = set()
+    for q_body in t_doc['queries'].values():
+        ids = q_body.get('doc_id', [])
+        doc_ids |= set(ids)
+    client = MiniClient(args.host, args.port)
+    dump_mapping(client, args.index, fn_mapping)
 
 
 def perform_query(args: argparse.Namespace):
@@ -251,6 +258,8 @@ def perform_query(args: argparse.Namespace):
 
     all_queries = []
     query_names = []
+    # TODO: pre-populate with existing results -- if something we have
+    #  already satisfies the new queries, use that instead
     for query_name, q_body in doc['queries'].items():
         if 'doc_id' in q_body and not q_body.get('re-query', False):
             continue
@@ -276,15 +285,25 @@ def perform_query(args: argparse.Namespace):
     missing_cmt = tomlkit.comment(f"No match was found on {dt_str}")
     for missing_id in missing:
         query_name = query_names[missing_id]
-        doc['queries'][query_name].add('doc_id', tomlkit.string(''))
+        doc['queries'][query_name].add('doc_id', [])
         doc['queries'][query_name].add(missing_cmt)
     picked_ids = minimal_cover_set(subsets)
-    found_cmt = tomlkit.comment(f"No match was found on {dt_str}")
+    found_cmt = tomlkit.comment(f"Updated on {dt_str}")
     for doc_id, subsets in picked_ids.items():
         for query_idx in subsets:
             query_name = query_names[query_idx]
-            doc['queries'][query_name].add('doc_id', tomlkit.string(doc_id))
-            doc['queries'][query_name].add(found_cmt)
+            q_body = doc['queries'][query_name]
+            if 'doc_id' in q_body:
+                docs = q_body['doc_id']
+            else:
+                docs = []
+            docs.append(doc_id)
+            found_cmt = tomlkit.comment(f"{doc_id} added on {dt_str}")
+            q_body.add(found_cmt)
+            q_body['doc_id'] = docs
+            # FIXME: can't precisely control the presentation,
+            #  tomlkit is really lacking in terms of documentation
+            #  but on the other hand it is kind of insane to use it this way
     with open(args.queries, 'w') as f:
         f.write(tomlkit.dumps(doc))
 
@@ -365,6 +384,13 @@ if __name__ == '__main__':
         required=False
     )
     dump_parser = subparsers.add_parser('dump')
+    dump_parser.add_argument(
+        '--input', '-i', metavar='INPUT', type=str, required=True,
+    )
+    dump_parser.add_argument(
+        '--output-prefix', '-o', metavar='OUTPUT_PREFIX', type=str,
+        required=True,
+    )
 
     args = parser.parse_args()
     if args.verbose == 1:
@@ -375,6 +401,7 @@ if __name__ == '__main__':
     cmd_map = {
         'generate': generate_queries,
         'query': perform_query,
+        'dump': dump_documents
     }
 
     cmd_map[args.cmd](args)
