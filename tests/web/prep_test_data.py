@@ -7,7 +7,7 @@ import pickle
 import sys
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set, FrozenSet, Tuple
+from typing import Any, Dict, List, Optional, Set, FrozenSet
 from functools import reduce
 
 import requests
@@ -88,7 +88,7 @@ class MiniClient:
         if self.major_version >= 7:
             raise RuntimeError("Document type removed in ES7+")
         mapping = self.api_req('get', f'/{index}')
-        mapping = next(iter(mapping.values()))['mapping']
+        mapping = next(iter(mapping.values()))['mappings']
         return next(iter(mapping.keys()))
 
     def get_source(self, index: str, doc_id):
@@ -237,6 +237,8 @@ def dump_documents(args: argparse.Namespace):
     fn_mapping = f'{args.output_prefix}.json'
     fn_docs = f'{args.output_prefix}.ndjson'
     if os.path.exists(fn_mapping) or os.path.exists(fn_docs):
+        # obviously we can overwrite the files that pops into existence
+        # after the check, but we don't care
         logging.error("File already exists!")
         sys.exit(-1)
     with open(args.input) as f:
@@ -246,7 +248,16 @@ def dump_documents(args: argparse.Namespace):
         ids = q_body.get('doc_id', [])
         doc_ids |= set(ids)
     client = MiniClient(args.host, args.port)
-    dump_mapping(client, args.index, fn_mapping)
+    mapping = client.get_mapping(args.index)
+    with open(fn_mapping, 'x') as f:
+        json.dump(mapping, f)
+    with open(fn_docs, 'x') as f:
+        for doc_id in doc_ids:
+            src = client.get_source(args.index, doc_id)
+            json.dump({"index": {"_id": doc_id}}, f)
+            f.write('\n')
+            json.dump(src, f)
+            f.write('\n')
 
 
 def perform_query(args: argparse.Namespace):
@@ -293,14 +304,13 @@ def perform_query(args: argparse.Namespace):
         for query_idx in subsets:
             query_name = query_names[query_idx]
             q_body = doc['queries'][query_name]
-            if 'doc_id' in q_body:
-                docs = q_body['doc_id']
-            else:
-                docs = []
+            docs = q_body.get('doc_id', [])
             docs.append(doc_id)
             found_cmt = tomlkit.comment(f"{doc_id} added on {dt_str}")
-            q_body.add(found_cmt)
+            # if 'doc_id' in q_body:
+            #   q_body.remove('doc_id')  # here is the thing, pop is broken
             q_body['doc_id'] = docs
+            q_body.add(found_cmt)
             # FIXME: can't precisely control the presentation,
             #  tomlkit is really lacking in terms of documentation
             #  but on the other hand it is kind of insane to use it this way
@@ -340,12 +350,6 @@ def generate_queries(args: argparse.Namespace):
 
 def get_iso8601_dt_str():
     return datetime.now().replace(microsecond=0).astimezone().isoformat()
-
-
-def dump_mapping(client: MiniClient, index: str, filename: str):
-    mapping = client.get_mapping(index)
-    with open(filename, 'w') as f:
-        json.dump(mapping, f)
 
 
 if __name__ == '__main__':
