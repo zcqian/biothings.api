@@ -59,9 +59,12 @@ class MiniClient:
                            data=body, params=params)
         return ret
 
-    def scroll(self, scroll_id: str):
+    def scroll(self, scroll_id: str, scroll: str):
+        # ES requires the scroll parameter every time or weird things happen
         return self.api_req('get', '/_search/scroll',
-                            data={'scroll_id': scroll_id})
+                            data={'scroll_id': scroll_id,
+                                  'scroll': scroll}
+                            )
 
     def get_mapping(self, index: str):
         if self.major_version == 6:
@@ -178,7 +181,8 @@ def dump_ids_from_queries(client: MiniClient,
                         query_hit_running_total, query_idx
                     )
                     break
-                resp = client.scroll(scroll_id=sc_id)
+                resp = client.scroll(scroll_id=sc_id, scroll='1m')
+                sc_id = resp['_scroll_id']
             else:
                 logging.info("End of results, got %d", query_hit_running_total)
             client.clear_scroll(scroll_id=sc_id)
