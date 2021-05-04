@@ -1,3 +1,71 @@
+"""
+Test Data Prep Tool
+
+This tool will fetch data to use in BioThings App Test test cases, given
+specification, of such data.
+
+The configuration file uses TOML. Documented below. If a value is populated,
+then that will be the default value.
+
+    [elasticsearch]
+    # host name or IP address of Elasticsearch instance
+    host = 127.0.0.1
+    # port number of elastic search
+    port = 9200
+    # name of the index to pull data from, required
+    index =
+
+
+    [global]
+    # list of _id that will be ignored from the query process. This does not
+    # affect the dump process
+    ignore_doc_id = []
+
+    # list of _id that will be removed from doc_id in each query.
+    # typically only required when the origin data changes and such document
+    # is no longer found.
+    # CAUTION: if you remove an _id, it will not be dumped. If this is used
+    #  in any of the tests, you will need to update the test accordingly
+    remove_doc_id = []
+
+
+    [queries]
+    # this section is for individual queries. they are all in their
+    # separate tables
+    [queries.example_query_name]
+    # indicates whether this query is automatically generated
+    auto_gen = false
+
+    # body of the query sent to the ES search endpoint, JSON in string
+    query = '''
+    {
+        "query": {
+            "exists": {
+                "field": "name.of.field"
+            }
+        }
+    }
+    '''
+    # of course you can do it in one line, or use more complex queries and
+    # also filters, anything that you can send to that endpoint that yields
+    # the typical response
+
+    # list of query results, if this is empty, there should be a comment
+    # explaining that no matches was found at the time of query
+    doc_id =
+
+    # indication that no result was found
+    no_match = false
+
+    # force this query to be run again even if results are present
+    force_requery = false
+
+
+
+Not all features have been implemented yet.
+
+"""
+
 import argparse
 import hashlib
 import json
