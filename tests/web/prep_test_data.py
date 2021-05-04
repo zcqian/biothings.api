@@ -15,6 +15,8 @@ from urllib.parse import urljoin
 
 import tomlkit
 
+from pprint import pprint
+
 
 class MiniClient:
     """
@@ -47,6 +49,8 @@ class MiniClient:
                                   json=data, params=params,
                                   timeout=self._timeout)
         if not 200 <= r.status_code < 300:
+            if r.status_code == 400:
+                pprint(r.json())
             raise RuntimeError
         return r.json()
 
